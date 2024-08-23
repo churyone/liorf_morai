@@ -35,6 +35,7 @@ add_message_files(
   DIRECTORY msg
   FILES
   cloud_info.msg
+  slamStatus.msg
 )
 
 add_service_files(
