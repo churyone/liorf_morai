@@ -1,4 +1,5 @@
 #include "utility.h"
+#include "liorf/slamStatus.h"
 
 #include <gtsam/geometry/Rot3.h>
 #include <gtsam/geometry/Pose3.h>
@@ -162,6 +163,7 @@ public:
     ros::Subscriber subImu;
     ros::Subscriber subOdometry;
     ros::Publisher pubImuOdometry;
+    ros::Publisher pubslamStatus; // /slam/status 토픽 발행자 추가
 
     bool systemInitialized = false;
 
@@ -198,11 +200,13 @@ public:
     const double delta_t = 0;
 
     int key = 1;
-    
+
     // T_bl: tramsform points from lidar frame to imu frame 
     gtsam::Pose3 imu2Lidar = gtsam::Pose3(gtsam::Rot3(1, 0, 0, 0), gtsam::Point3(-extTrans.x(), -extTrans.y(), -extTrans.z()));
     // T_lb: tramsform points from imu frame to lidar frame
     gtsam::Pose3 lidar2Imu = gtsam::Pose3(gtsam::Rot3(1, 0, 0, 0), gtsam::Point3(extTrans.x(), extTrans.y(), extTrans.z()));
+
+    liorf::slamStatus slamStatus; // slamStatus 멤버 변수로 선언
 
     IMUPreintegration()
     {
@@ -210,6 +214,7 @@ public:
         subOdometry = nh.subscribe<nav_msgs::Odometry>("liorf/mapping/odometry_incremental", 5,    &IMUPreintegration::odometryHandler, this, ros::TransportHints().tcpNoDelay());
 
         pubImuOdometry = nh.advertise<nav_msgs::Odometry> (odomTopic+"_incremental", 2000);
+        pubslamStatus  = nh.advertise<liorf::slamStatus>("/slam/status", 1);  // /slam/status 토픽 발행자 생성
 
         boost::shared_ptr<gtsam::PreintegrationParams> p = gtsam::PreintegrationParams::MakeSharedU(imuGravity);
         p->accelerometerCovariance  = gtsam::Matrix33::Identity(3,3) * pow(imuAccNoise, 2); // acc white noise in continuous
@@ -225,7 +230,12 @@ public:
         noiseModelBetweenBias = (gtsam::Vector(6) << imuAccBiasN, imuAccBiasN, imuAccBiasN, imuGyrBiasN, imuGyrBiasN, imuGyrBiasN).finished();
         
         imuIntegratorImu_ = new gtsam::PreintegratedImuMeasurements(p, prior_imu_bias); // setting up the IMU integration for IMU message thread
-        imuIntegratorOpt_ = new gtsam::PreintegratedImuMeasurements(p, prior_imu_bias); // setting up the IMU integration for optimization        
+        imuIntegratorOpt_ = new gtsam::PreintegratedImuMeasurements(p, prior_imu_bias); // setting up the IMU integration for optimization
+
+        // slamStatus 메시지 초기화
+        slamStatus.status = true;  // SLAM 상태를 true로 설정
+        slamStatus.system_initialized = systemInitialized;  // 메시지에 초기화 상태 반영
+        slamStatus.header.stamp = ros::Time::now();  // 타임스탬프를 현재 시각으로 설정
     }
 
     void resetOptimization()
@@ -437,10 +447,16 @@ public:
 
     bool failureDetection(const gtsam::Vector3& velCur, const gtsam::imuBias::ConstantBias& biasCur)
     {
+        slamStatus.status = true;    // 기본값으로 true 설정
+        slamStatus.system_initialized = systemInitialized; // 시스템 초기화 상태
+
         Eigen::Vector3f vel(velCur.x(), velCur.y(), velCur.z());
         if (vel.norm() > 30)
         {
             ROS_WARN("Large velocity, reset IMU-preintegration!");
+            slamStatus.status = false; // status를 false로 할당
+            slamStatus.header.stamp = ros::Time::now();  // 현재 시각으로 타임스탬프 설정
+            pubslamStatus.publish(slamStatus); // 토픽 발행
             return true;
         }
 
@@ -449,6 +465,9 @@ public:
         if (ba.norm() > 1.0 || bg.norm() > 1.0)
         {
             ROS_WARN("Large bias, reset IMU-preintegration!");
+            slamStatus.status = false; // status를 false로 할당
+            slamStatus.header.stamp = ros::Time::now();  // 현재 시각으로 타임스탬프 설정
+            pubslamStatus.publish(slamStatus); // 토픽 발행
             return true;
         }
 

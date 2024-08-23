@@ -1,0 +1,3 @@
+Header header
+bool status
+bool system_initialized
